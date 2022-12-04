@@ -1,9 +1,13 @@
 const vscode = require('vscode');
 const path = require('path');
 const fs = require('fs');
-const common = require('./out/extension-common');
+//const common = require('./out/extension-common');
+const common = require('./extension-common.js');
 const utils = require('./utils');
 const YAML = require('./yaml.js');
+const { isUndefined } = require('util');
+const { spawn } = require('child_process');
+const os = require('os');
 
 const PostfixURI = '@URI@';
 
@@ -412,6 +416,59 @@ function activate(context) {
     if (debug) { console.log(`commandvariable.file.content: readFileContent: read file before utf8 conversion`); }
     return utf8_to_str(contentUTF8);
   };
+  const processSpawnContent = async (args, debug) => {
+    debug=true;
+    let stdinStr = (args.stdin == undefined) ? "" : args.stdin;
+    const inShell = (args.shell == undefined) ? (os.type == 'Windows_NT') : args.shell;
+    const shouldTrimEnd = (args.trimEnd == undefined) ? true : args.trimEnd;
+    if (debug) { console.log(`commandvariable.process.spawn: before variable substitution: command: ` +
+                             `'${args.command}', args: ${args.args}, stdin: '${stdinStr}', shell: ${inShell}, trimEnd: ${shouldTrimEnd}`); }
+    if (!isString(args.command)) return "Unknown";
+    if (!isString(stdinStr)) return "Unknown";
+    if (typeof inShell != "boolean") return "Unknown";
+    if (typeof shouldTrimEnd != "boolean") return "Unknown";
+    const cmd = await variableSubstitution(args.command);
+    stdinStr = await variableSubstitution(stdinStr);
+    const cmdArgs = []
+    if (args.args != undefined) {
+      if (!Array.isArray(args.args)) return "Unknown";
+      for (const cmdArg of args.args) {
+        cmdArgs.push(await variableSubstitution(cmdArg));
+      }
+    }
+    if (debug) { console.log(`commandvariable.process.spawn: after variable substitution: command: '${cmd}', args: ${cmdArgs}, stdin: '${stdinStr}'`); }
+    const child = spawn(cmd, cmdArgs, { shell: inShell } );
+    child.stdin.setEncoding('utf-8');
+    child.stdout.setEncoding('utf-8');
+    child.stderr.setEncoding('utf-8');
+    try {
+      if (stdinStr != "") child.stdin.write(stdinStr);
+      child.stdin.end();
+    } catch(e) {
+      // ignore case where process exits without reading input
+    }
+    let stdoutData = "";
+    for await (const chunk of child.stdout) {
+        stdoutData += chunk;
+    }
+    // stdoutData = utf8_to_str(stdoutData);
+    if (debug) { console.log(`commandvariable.process.spawn: stdout data: '${stdoutData}'`); }
+    let stderrData = "";
+    for await (const chunk of child.stderr) {
+        stderrData += chunk;
+    }
+    // stderrData = utf8_to_str(stderrData);
+    if (debug) { console.log(`commandvariable.process.spawn: stderr data: '${stderrData}'`); }
+    const exitCode = await new Promise( (resolve, reject) => {
+        child.on('close', resolve);
+    });
+    if (debug) { console.log(`commandvariable.process.spawn: exitCode: '${exitCode}'`); }
+    if (exitCode) return "Unknown";
+    if (shouldTrimEnd) {
+      stdoutData = stdoutData.trimEnd();
+    }
+    return stdoutData;
+  };
   function getExpressionFunction(expr) {
     try {
       return Function(`"use strict";return (function calcexpr(content) {
@@ -470,6 +527,14 @@ function activate(context) {
   context.subscriptions.push(
     vscode.commands.registerCommand('extension.commandvariable.file.content', async (args) => {
       return await fileContent(args);
+    })
+  );
+  const processSpawn = async (args) => {
+    return await argsContentValue(args, processSpawnContent, 'processSpawn', 'process.spawn');
+  };
+  context.subscriptions.push(
+    vscode.commands.registerCommand('extension.commandvariable.process.spawn', async (args) => {
+      return await processSpawnContent(args);
     })
   );
   context.subscriptions.push(
