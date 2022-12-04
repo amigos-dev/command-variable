@@ -48,6 +48,7 @@
     "onCommand:extension.commandvariable.file.content",
     "onCommand:extension.commandvariable.file.contentInEditor",
     "onCommand:extension.commandvariable.file.pickFile",
+    "onCommand:extension.commandvariable.process.spawn",
     "onCommand:extension.commandvariable.workspace.folder",
     "onCommand:extension.commandvariable.workspace.folder1Up",
     "onCommand:extension.commandvariable.workspace.folder2Up",
