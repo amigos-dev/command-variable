@@ -8,6 +8,7 @@ const YAML = require('./yaml.js');
 const { isUndefined } = require('util');
 const { spawn } = require('child_process');
 const os = require('os');
+const { stdout } = require('process');
 
 const PostfixURI = '@URI@';
 
@@ -421,8 +422,9 @@ function activate(context) {
     let stdinStr = (args.stdin == undefined) ? "" : args.stdin;
     const inShell = (args.shell == undefined) ? (os.type == 'Windows_NT') : args.shell;
     const shouldTrimEnd = (args.trimEnd == undefined) ? true : args.trimEnd;
+    const teeToTerminal = (args.teeToTerminal == undefined) ? true : args.teeToTerminal;
     if (debug) { console.log(`commandvariable.process.spawn: before variable substitution: command: ` +
-                             `'${args.command}', args: ${args.args}, stdin: '${stdinStr}', shell: ${inShell}, trimEnd: ${shouldTrimEnd}`); }
+                             `'${args.command}', args: ${args.args}, stdin: '${stdinStr}', shell: ${inShell}, trimEnd: ${shouldTrimEnd}, teeToTerminal: ${teeToTerminal}`); }
     if (!isString(args.command)) return "Unknown";
     if (!isString(stdinStr)) return "Unknown";
     if (typeof inShell != "boolean") return "Unknown";
@@ -436,36 +438,90 @@ function activate(context) {
         cmdArgs.push(await variableSubstitution(cmdArg));
       }
     }
-    if (debug) { console.log(`commandvariable.process.spawn: after variable substitution: command: '${cmd}', args: ${cmdArgs}, stdin: '${stdinStr}'`); }
-    const child = spawn(cmd, cmdArgs, { shell: inShell } );
-    child.stdin.setEncoding('utf-8');
-    child.stdout.setEncoding('utf-8');
-    child.stderr.setEncoding('utf-8');
-    try {
-      if (stdinStr != "") child.stdin.write(stdinStr);
-      child.stdin.end();
-    } catch(e) {
-      // ignore case where process exits without reading input
-    }
-    let stdoutData = "";
-    for await (const chunk of child.stdout) {
-        stdoutData += chunk;
-    }
-    // stdoutData = utf8_to_str(stdoutData);
-    if (debug) { console.log(`commandvariable.process.spawn: stdout data: '${stdoutData}'`); }
-    let stderrData = "";
-    for await (const chunk of child.stderr) {
-        stderrData += chunk;
-    }
-    // stderrData = utf8_to_str(stderrData);
-    if (debug) { console.log(`commandvariable.process.spawn: stderr data: '${stderrData}'`); }
-    const exitCode = await new Promise( (resolve, reject) => {
-        child.on('close', resolve);
-    });
-    if (debug) { console.log(`commandvariable.process.spawn: exitCode: '${exitCode}'`); }
+
+    let exitCode = 0;
+    
+    if ( (os.type.toLowerCase() == 'darwin') || (os.type.toLowerCase == 'linux') ){
+      // MacOS and Linux treated the same as Unix based OS
+      if (debug) { console.log(`commandvariable.process.spawn: after variable substitution: command: '${cmd}', args: ${cmdArgs}, stdin: '${stdinStr}'`); }
+      const child = spawn(cmd, cmdArgs, { shell: inShell } );
+      child.stdin.setEncoding('utf-8');
+      child.stdout.setEncoding('utf-8');
+      child.stderr.setEncoding('utf-8');
+      try {
+        if (stdinStr != "") child.stdin.write(stdinStr);
+        child.stdin.end();
+      } catch(e) {
+        // ignore case where process exits without reading input
+      }
+      let stdoutData = "";
+      for await (const chunk of child.stdout) {
+          stdoutData += chunk;
+      }
+      // stdoutData = utf8_to_str(stdoutData);
+      if (debug) { console.log(`commandvariable.process.spawn: stdout data: '${stdoutData}'`); }
+      let stderrData = "";
+      for await (const chunk of child.stderr) {
+          stderrData += chunk;
+      }
+      // stderrData = utf8_to_str(stderrData);
+      if (debug) { console.log(`commandvariable.process.spawn: stderr data: '${stderrData}'`); }
+      exitCode = await new Promise( (resolve, reject) => {
+          child.on('close', resolve);
+      });
+      if (debug) { console.log(`commandvariable.process.spawn: exitCode: '${exitCode}'`); }
+    } 
+    else {
+      if (os.type.toLowerCase == 'windows_nt') {
+        // On Windows it is more reliable to use execSync primitive to spawn child process and capture its' output
+        // Execution time is restricted to minimize impact 
+        options.timeout = (args.maxTimeout_ms == undefined) ? 1000 : args.maxTimeout_ms;
+
+        // FIXME Do we need safe current directory on WIndows to be set to : a) one of the workspace folders b) currently edited file directoty c) current user directory ?
+        options.cwd = '';
+        //optons.cwd = getCurrentDirectoryForExec();
+
+        options.input = sdinStr;
+        options.maxBuffer = 2000; // FIXME avoid hard coding
+        options.encoding = 'utf-8';
+        // FIXME - On Windows by default console window for the child process will be shown. If it is preferable 
+        // to tee into the currently active Terminal code needs to be enhanced
+        options.windowsHide = teeToTerminal;
+        stderrData = '';
+        stdoutData = '';
+        exitCode = 0;
+        if (debug) { console.log(`commandvariable.process.spawn: windows input data: \n
+                                cmd: '${cmd}' options: ${options}`); }
+
+        if (teeToTerminal) {
+          termString = 'echo Command variable extension is executing child command: ' + cmd + ' ' +stdinStr + "\u000D";
+          await vscode.commands.executeCommand('workbench.action.terminal.sendSequence', { "text": termString });
+        }
+        try {
+          stdoutData = execSync(cmd, options);
+          exitCode = 0;
+        } catch (error) {
+          stdoutData = error.stdout;
+          stderrData = error.stderr;
+          exitCode = (error.status != null) ? error.status : 1; //status set to null if the subprocess terminated due to a signal
+        }
+        if (debug) { console.log(`commandvariable.process.spawn: windows stdout data: '${stdoutData}'`); }
+        if (debug) { console.log(`commandvariable.process.spawn: windows exitCode : '${exitCode}'`); }
+
+        if (teeToTerminal) {
+          termString = 'echo Result of child command execution: ' + stdoutData + "\u000D";
+          await vscode.commands.executeCommand('workbench.action.terminal.sendSequence', { "text": termString });
+        }
+      }
+      else {
+        console.log(`OS type (${os.type()}) is not recognized as valid for executing child process safely`);
+        return "Unrecognized";
+      }
+    }  
+
     if (exitCode) return "Unknown";
     if (shouldTrimEnd) {
-      stdoutData = stdoutData.trimEnd();
+        stdoutData = stdoutData.trimEnd();
     }
     return stdoutData;
   };
