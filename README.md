@@ -20,6 +20,7 @@ Not all commands are supported yet in the web extension version. Supported comma
 * [File Content YAML Property](#file-content-yaml-property)
 * [File Content Multiple Key-Values/Properties](#file-content-multiple-key-valuesproperties)
 * [File Content in Editor](#file-content-in-editor)
+* [Program execution output](#program-execution-output)
 * [Config Expression](#config-expression)
 * [Pick File](#pick-file)
 * [number](#number)
@@ -534,6 +535,71 @@ Add to **`keybindings.json`**
     "when": "editorTextFocus"
 }
 ```
+
+## Program Execution Output
+
+An external program is executed and the result is returned without storing in the file system. This is useful for sensitive data, like credentials. 
+
+Arguments used are similar to the arguments used by`extension.commandvariable.file.content`, but command line and input arguments can be made platform specific by adding platform specific sub-objects to args object.
+
+The input and output of the program execution is assumed to be encoded with UTF-8.
+
+Supported platform specific subojects:
+
+* `windows`
+* `linux`
+* `osx`
+
+Supported arguments. Command and stdin arguments are first searced in platform specific suobjects and if not found, in arguments object.
+* `command` : specifies the file to read. Supports [variables](#variables), like `${workspaceFolder}`, <code>&dollar;{workspaceFolder:<em>name</em>}</code>, <code>&dollar;{pickFile:<em>name</em>}</code> and <code>&dollar;{remember:<em>key</em>}</code>
+* `stdin` : 
+* `shouldTrimEnd` : (Optional) Trim the tail. (default: `"false"`)
+* `teeToTerminal` : (Optional) If desirable, copy command line, input and output to the currectly active terminal for inspection by the user. On Windows, if option is not set, spawned process will show a console window. (default: `"false"`)
+* `maxTimeout_ms` : (Optional) Restrict execution time for the spawned program to a given value in milliseconds. (default : `1000`)
+
+
+```json
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "echo Login to service with sassword",
+      "type": "shell",
+      "command": "service_login",
+      "args": [
+        "${input:servicePassword}"
+      ],
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "servicePassword",
+      "type": "command",
+      "command": "extension.commandvariable.process.spawn",
+      "args": {
+         "shouldTrimEnd" : true,
+         "teeToTerminal" : true, 
+         "maxTimeout_ms" : 1500,
+         "windows" : {
+           "command" : "cmdkey.exe",
+           "stdin" : "${env:SERVICE} /user:${env:ACCOUNT} /pass"
+         },
+         "osx" : {
+          "command" : "security",
+          "stdin"   : "find-generic-password -a ${env:ACCOUNT} -s ${env:SERVICE}"
+         },
+         "linux" : {
+           "command" : "keyring",
+           "stdin" : "get ${env:SERVICE} ${env:ACCOUNT}"
+         } 
+      }
+    }
+  ]
+}
+```
+
+
 
 ## Config Expression
 

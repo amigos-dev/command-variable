@@ -6,7 +6,7 @@ const common = require('./extension-common.js');
 const utils = require('./utils');
 const YAML = require('./yaml.js');
 const { isUndefined } = require('util');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 const os = require('os');
 const { stdout } = require('process');
 
@@ -417,32 +417,68 @@ function activate(context) {
     if (debug) { console.log(`commandvariable.file.content: readFileContent: read file before utf8 conversion`); }
     return utf8_to_str(contentUTF8);
   };
+
+  // Execute child process in a controlled way by setting the current working directory to user's home directory
+  //import * as platform from 'vs/base/common/platform';
+
+  const commandArgLinux = 'linux';
+  const commandArgMacOs = 'osx';
+  const commandArgWindows = 'windows';
+  const commandArgGeneric = '';
+  
+  let subCommandArg = (os.platform() == 'linux') ? commandArgLinux : 
+                   (os.platform() == 'darwin') ? commandArgMacOs : 
+                   (os.platform() == 'win32') ? commandArgWindows : 
+                   commandArgGeneric;
+
+  function getCurrentDirectoryForExec() 
+  {
+    return os.homedir();
+  }
+
   const processSpawnContent = async (args, debug) => {
-    debug=true;
-    let stdinStr = (args.stdin == undefined) ? "" : args.stdin;
+    debug = (args.debug != undefined) ? args.debug : true;
+
     const inShell = (args.shell == undefined) ? (os.type == 'Windows_NT') : args.shell;
     const shouldTrimEnd = (args.trimEnd == undefined) ? true : args.trimEnd;
     const teeToTerminal = (args.teeToTerminal == undefined) ? true : args.teeToTerminal;
-    if (debug) { console.log(`commandvariable.process.spawn: before variable substitution: command: ` +
-                             `'${args.command}', args: ${args.args}, stdin: '${stdinStr}', shell: ${inShell}, trimEnd: ${shouldTrimEnd}, teeToTerminal: ${teeToTerminal}`); }
-    if (!isString(args.command)) return "Unknown";
+
+    // Command string is platform dependent - locate platform specific member object, containing command line and stdin string
+
+    let platformArgs = (subCommandArg in args) ? args[subCommandArg] : args;
+    let stdinStr = platformArgs.stdin;
+    let commandStr = platformArgs.command; 
+
+    if (!isString(commandStr)) return "Unknown";
     if (!isString(stdinStr)) return "Unknown";
     if (typeof inShell != "boolean") return "Unknown";
     if (typeof shouldTrimEnd != "boolean") return "Unknown";
-    const cmd = await variableSubstitution(args.command);
+
+    const cmd = await variableSubstitution(commandStr);
     stdinStr = await variableSubstitution(stdinStr);
+
+    if (debug) { 
+      console.log(`commandvariable.process.spawn: before variable substitution:  ` +
+                             `'${args.command}', args: ${args.args}, stdin: '${stdinStr}', shell: ${inShell}, trimEnd: ${shouldTrimEnd}, teeToTerminal: ${teeToTerminal}`); 
+    }
+
+    if (debug) {
+      console.log('commandvariable.process.spawn: platform specific arguments' + `${platformArgs}`);
+    }
+
+    // Perform variable substition for arguments we located
     const cmdArgs = []
-    if (args.args != undefined) {
-      if (!Array.isArray(args.args)) return "Unknown";
-      for (const cmdArg of args.args) {
+    if (platformArgs != undefined) {
+      if (!Array.isArray(platformArgs.args)) return "Unknown";
+      for (const cmdArg of platformArgs.args) {
         cmdArgs.push(await variableSubstitution(cmdArg));
       }
     }
 
-    let exitCode = 0;
+    let exitCode = 0;spawn
     
-    if ( (os.type.toLowerCase() == 'darwin') || (os.type.toLowerCase == 'linux') ){
-      // MacOS and Linux treated the same as Unix based OS
+    if ( (os.platform() == 'darwin') || (os.platform() == 'linux') ){
+      // MacOS and Linux treated as Posix platform
       if (debug) { console.log(`commandvariable.process.spawn: after variable substitution: command: '${cmd}', args: ${cmdArgs}, stdin: '${stdinStr}'`); }
       const child = spawn(cmd, cmdArgs, { shell: inShell } );
       child.stdin.setEncoding('utf-8');
@@ -472,20 +508,19 @@ function activate(context) {
       if (debug) { console.log(`commandvariable.process.spawn: exitCode: '${exitCode}'`); }
     } 
     else {
-      if (os.type.toLowerCase == 'windows_nt') {
+      if (os.platform() == 'win32') {
         // On Windows it is more reliable to use execSync primitive to spawn child process and capture its' output
         // Execution time is restricted to minimize impact 
         options.timeout = (args.maxTimeout_ms == undefined) ? 1000 : args.maxTimeout_ms;
 
         // FIXME Do we need safe current directory on WIndows to be set to : a) one of the workspace folders b) currently edited file directoty c) current user directory ?
-        options.cwd = '';
-        //optons.cwd = getCurrentDirectoryForExec();
+        optons.cwd = getCurrentDirectoryForExec();
 
-        options.input = sdinStr;
+        options.input = stdinStr;
         options.maxBuffer = 2000; // FIXME avoid hard coding
         options.encoding = 'utf-8';
-        // FIXME - On Windows by default console window for the child process will be shown. If it is preferable 
-        // to tee into the currently active Terminal code needs to be enhanced
+        // On Windows by default console window for the child process will be shown. It is preferable 
+        // to tee into the currently active Terminal 
         options.windowsHide = teeToTerminal;
         stderrData = '';
         stdoutData = '';
@@ -514,7 +549,7 @@ function activate(context) {
         }
       }
       else {
-        console.log(`OS type (${os.type()}) is not recognized as valid for executing child process safely`);
+        console.log(`OS type (${os.type()} and platform (${os.platform()}) is not recognized as valid for executing child process safely`);
         return "Unrecognized";
       }
     }  
